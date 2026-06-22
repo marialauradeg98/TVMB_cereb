@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tvmb-cereb"
+version = "0.1.0"
+description = "TVMB cereb tools"
+requires-python = ">=3.9"
+dependencies = [
+    "gdown",
+    "h5py",
+    "matplotlib",
+    "numpy",
+    "scipy",
+    "tvb-library",
+    "voxcell",
+]
+
+[tool.setuptools]
+packages = ["simulator"]
