@@ -12,9 +12,12 @@ dependencies = [
     "h5py",
     "matplotlib",
     "numpy",
+    "openpyxl",
+    "pandas",
     "scipy",
     "tvb-library",
     "voxcell",
+    "vbi"
 ]
 
 [tool.setuptools]

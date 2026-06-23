@@ -335,19 +335,23 @@ class PlotConn:
         ax.tick_params(labelsize=self.TICK_SIZE)
         self.add_colorbar(im, ax, cb_label, fmt=fmt)
 
-    def plot_matrix(self, data, title, cmap, cb_label, out_path, fmt="%.2f", vmin=None, vmax=None):
-        """Plot and save a single connectivity matrix (weights or tract lengths)."""
+    def plot_matrix(self, data, title, cmap, cb_label, out_path=None, fmt="%.2f", vmin=None, vmax=None, save=False):
+        """Plot a single connectivity matrix (weights or tract lengths); save it if `save=True`."""
         fig, ax = plt.subplots(figsize=(7, 6))
         fig.patch.set_facecolor("white")
         ax.set_facecolor("white")
         self.plot_conn_matrix(ax, data, title, cmap, cb_label, fmt=fmt, vmin=vmin, vmax=vmax)
         fig.tight_layout()
-        fig.savefig(out_path, dpi=300, bbox_inches="tight", facecolor="white")
-        plt.close(fig)
-        print(f"Saved {out_path}")
+        if save:
+            if out_path is None:
+                raise ValueError("out_path is required when save=True")
+            fig.savefig(out_path, dpi=300, bbox_inches="tight", facecolor="white")
+            plt.close(fig)
+            print(f"Saved {out_path}")
+        return fig, ax
 
-    def plot_histogram(self, data, title, xlabel, out_path, color=None, fmt=".2f", loc="upper right"):
-        """Plot and save the distribution of the non-zero values of a single matrix."""
+    def plot_histogram(self, data, title, xlabel, out_path=None, color=None, fmt=".2f", loc="upper right", save=False):
+        """Plot the distribution of the non-zero values of a single matrix; save it if `save=True`."""
         nz = data[data > 0].ravel()
         fig, ax = plt.subplots(figsize=(7, 5))
         fig.patch.set_facecolor("white")
@@ -359,11 +363,15 @@ class PlotConn:
         ax.set_title(title, fontsize=self.TITLE_SIZE, fontweight="bold", pad=12)
         self.style_ax(ax)
         fig.tight_layout()
-        fig.savefig(out_path, dpi=300, bbox_inches="tight", facecolor="white")
-        plt.close(fig)
-        print(f"Saved {out_path}")
+        if save:
+            if out_path is None:
+                raise ValueError("out_path is required when save=True")
+            fig.savefig(out_path, dpi=300, bbox_inches="tight", facecolor="white")
+            plt.close(fig)
+            print(f"Saved {out_path}")
+        return fig, ax
 
-    def plot_network_3d(self, weights_raw, centres, macros, surf_pts, out_path):
+    def plot_network_3d(self, weights_raw, centres, macros, surf_pts, out_path=None, save=False):
         n      = weights_raw.shape[0]
         w_flat = weights_raw[weights_raw > 0]
         thresh = np.percentile(w_flat, 90) if len(w_flat) else 0
@@ -416,11 +424,15 @@ class PlotConn:
         ax3d.view_init(elev=90, azim=-90)
 
         fig.tight_layout()
-        fig.savefig(out_path, dpi=300, bbox_inches="tight", facecolor="white")
-        plt.close(fig)
-        print(f"Saved {out_path}")
+        if save:
+            if out_path is None:
+                raise ValueError("out_path is required when save=True")
+            fig.savefig(out_path, dpi=300, bbox_inches="tight", facecolor="white")
+            plt.close(fig)
+            print(f"Saved {out_path}")
+        return fig, ax3d
 
-    def plot_macroarea_distribution(self, labels, macros, out_path):
+    def plot_macroarea_distribution(self, labels, macros, out_path=None, save=False):
         seen   = set()
         counts = Counter()
         for lb, macro in zip(labels, macros):
@@ -466,6 +478,10 @@ class PlotConn:
                      fontweight="bold", pad=14, color=self.C_TEXT)
 
         fig.tight_layout()
-        fig.savefig(out_path, dpi=300, bbox_inches="tight", facecolor="white")
-        plt.close(fig)
-        print(f"Saved {out_path}")
+        if save:
+            if out_path is None:
+                raise ValueError("out_path is required when save=True")
+            fig.savefig(out_path, dpi=300, bbox_inches="tight", facecolor="white")
+            plt.close(fig)
+            print(f"Saved {out_path}")
+        return fig, ax
