@@ -13,6 +13,8 @@ from vbi.feature_extraction.calc_features import calc_features as _vbi_calc_feat
 from vbi.feature_extraction.features_settings import load_json as _vbi_load_json
 from voxcell import RegionMap
 
+from simulator.mouse_conn import MouseConnectivity
+
 VBI_FEATURES_JSON = os.path.join(os.path.dirname(vbi.__file__), "feature_extraction", "features.json")
 
 
@@ -27,6 +29,10 @@ class BoldTimeSeries:
     against the Allen ontology (e.g. conn_data/1.json, loaded via
     voxcell.RegionMap) so they follow the same "<Hemisphere> <Region name>"
     convention used by MouseConnectivity.region_labels (simulator/mouse_conn.py).
+    Each region is also classified into a macroarea (see
+    MouseConnectivity.MACRO_LIST/get_macro) and exposed as self.macros,
+    aligned with self.region_labels, the same way MouseConnectivity does
+    for the structural connectivity.
 
     Parameters
     ----------
@@ -80,14 +86,18 @@ class BoldTimeSeries:
             else self.n_timepoints * tr_ms / 1000.0
         )
 
+        region_map = RegionMap.load_json(region_map_json)
         self.region_labels = self._build_region_labels(
-            atlas_xlsx, region_map_json, first_hemisphere,
+            atlas_xlsx, region_map, first_hemisphere,
         )
         if len(self.region_labels) != self.n_regions:
             raise ValueError(
                 f"{atlas_xlsx} yields {len(self.region_labels)} region "
                 f"labels but {path} has {self.n_regions} columns"
             )
+        self.macros = [
+            MouseConnectivity.get_macro(lab, region_map) for lab in self.region_labels
+        ]
 
     @staticmethod
     def _load_array(path: str, var_name: Optional[str]) -> np.ndarray:
@@ -107,10 +117,9 @@ class BoldTimeSeries:
 
     @staticmethod
     def _build_region_labels(
-        atlas_xlsx: str, region_map_json: str, first_hemisphere: str,
+        atlas_xlsx: str, region_map: RegionMap, first_hemisphere: str,
     ) -> List[str]:
         df = pd.read_excel(atlas_xlsx).sort_values("Position in .mat file")
-        region_map = RegionMap.load_json(region_map_json)
         names = [region_map.get(int(rid), "name") for rid in df["ID_ALLEN"]]
 
         second_hemisphere = "Left" if first_hemisphere == "Right" else "Right"
@@ -162,6 +171,45 @@ def compute_fcd(
     FCD      = np.corrcoef(fcs)
     FCD      = np.nan_to_num(FCD, nan=0.0, posinf=0.0, neginf=0.0)
     return FCD, fcs, speed_ts
+
+
+def compute_sfc(sc: np.ndarray, fc: np.ndarray) -> np.ndarray:
+    """
+    Per-region structural-functional coupling (SFC_i).
+
+    For each region i, the SC and FC matrices are first reduced to their
+    i-th row (excluding the self-connection on the diagonal), giving a
+    structural and a functional connectivity vector for that region.
+    SFC_i is the Pearson correlation coefficient between these two
+    vectors. `sc` and `fc` must be square, same shape, and share the same
+    region ordering.
+
+    Returns
+    -------
+    sfc : (n_regions,) array, SFC_i for each region i.
+    """
+    if sc.shape != fc.shape:
+        raise ValueError(f"sc shape {sc.shape} != fc shape {fc.shape}")
+    n = sc.shape[0]
+    off_diag = ~np.eye(n, dtype=bool)
+    sfc = np.empty(n)
+    for i in range(n):
+        r = np.corrcoef(sc[i, off_diag[i]], fc[i, off_diag[i]])[0, 1]
+        sfc[i] = r if np.isfinite(r) else 0.0
+    return sfc
+
+
+def compute_sfc_network(sfc: np.ndarray, weights: Optional[np.ndarray] = None) -> float:
+    """
+    Network-level structural-functional coupling (SFC_N): the average of
+    the per-region SFC_i values (see `compute_sfc`) for the regions
+    belonging to network N. `sfc` should already be restricted to that
+    network's regions. `weights[i]` is wi, the weight of region i; if
+    None (default), regions are averaged unweighted.
+    """
+    if weights is None:
+        return float(np.mean(sfc))
+    return float(np.average(sfc, weights=weights))
 
 
 def get_fmri_feature_cfg(json_path: Optional[str] = None, tags_to_keep: Optional[list] = None) -> dict:

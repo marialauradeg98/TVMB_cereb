@@ -12,12 +12,6 @@ VOXEL_MM          = 0.025
 FIGS_PATH = os.path.join(BASE, "../figs_conn")
 os.makedirs(FIGS_PATH, exist_ok=True)
 
-EXCLUDE_LABELS = {
-    "Right Hippocampo-amygdalar transition area",
-    "Left Hippocampo-amygdalar transition area",
-}
-
-
 if __name__ == "__main__":
 
     plot_conn = PlotConn()
@@ -27,7 +21,6 @@ if __name__ == "__main__":
     mc = MouseConnectivity(
         CONNECTIVITY_FILE,
         voxel_size_mm=VOXEL_MM,
-        exclude_labels=EXCLUDE_LABELS,
         region_map=region_map,
     )
     labels        = mc.region_labels
