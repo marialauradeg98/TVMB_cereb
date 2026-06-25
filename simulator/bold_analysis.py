@@ -98,6 +98,49 @@ class BoldTimeSeries:
         self.macros = [
             MouseConnectivity.get_macro(lab, region_map) for lab in self.region_labels
         ]
+        self.acronyms = [
+            MouseConnectivity.get_acronym(lab, region_map) for lab in self.region_labels
+        ]
+
+    @classmethod
+    def from_array(
+        cls,
+        ts: np.ndarray,
+        region_labels: Sequence[str],
+        tr_ms: float,
+        name: str = "simulated",
+        macros: Optional[Sequence[str]] = None,
+        acronyms: Optional[Sequence[str]] = None,
+        duration_s: Optional[float] = None,
+    ) -> "BoldTimeSeries":
+        """
+        Build a BoldTimeSeries directly from an in-memory array (e.g. a
+        Simulator.run() output) instead of loading from a .mat file, so
+        simulated BOLD can be reused with compute_fc/compute_fcd,
+        extract_fmri_features and PlotBold exactly like empirical
+        recordings.
+        """
+        self = cls.__new__(cls)
+        self.path = None
+        self.name = name
+        self.tr_ms = tr_ms
+
+        self.ts = np.asarray(ts, dtype=np.float64)
+        self.n_timepoints, self.n_regions = self.ts.shape
+        self.duration_s = (
+            duration_s if duration_s is not None
+            else self.n_timepoints * tr_ms / 1000.0
+        )
+
+        self.region_labels = list(region_labels)
+        if len(self.region_labels) != self.n_regions:
+            raise ValueError(
+                f"region_labels has {len(self.region_labels)} entries but "
+                f"ts has {self.n_regions} columns"
+            )
+        self.macros = list(macros) if macros is not None else None
+        self.acronyms = list(acronyms) if acronyms is not None else self.region_labels
+        return self
 
     @staticmethod
     def _load_array(path: str, var_name: Optional[str]) -> np.ndarray:
@@ -373,7 +416,8 @@ class PlotBold:
         save: bool = False,
     ):
         """
-        Plot raw BOLD time series.
+        Plot raw BOLD time series, one row per region, each row labeled
+        by the region's Allen ontology acronym (bold.acronyms).
 
         Parameters
         ----------
@@ -383,6 +427,8 @@ class PlotBold:
             (default) to plot every region in `bold.region_labels`.
         out_path : str or None
             Where to save the figure. Required if `save=True`.
+        title : str or None
+            Figure title.
         save : bool
             If True, save the figure to `out_path` and close it.
             If False (default), leave the figure open and return it.
@@ -401,25 +447,35 @@ class PlotBold:
             idx.append(bold.region_labels.index(lab))
 
         t = np.arange(bold.n_timepoints) * bold.tr_ms / 1000.0
+        n_rows = len(idx)
 
-        fig, ax = plt.subplots(figsize=(10, 5))
-        fig.patch.set_facecolor("white")
-        ax.set_facecolor("white")
-
-        colors = plt.cm.viridis(np.linspace(0, 1, len(idx)))
-        for color, i, lab in zip(colors, idx, labels):
-            ax.plot(t, bold.ts[:, i], color=color, linewidth=1.1, alpha=0.85, label=lab)
-
-        ax.set_xlabel("Time (s)", fontsize=self.LABEL_SIZE, labelpad=8)
-        ax.set_ylabel("BOLD signal", fontsize=self.LABEL_SIZE, labelpad=8)
-        ax.set_title(
-            title or f"{bold.name} — BOLD time series",
-            fontsize=self.TITLE_SIZE, fontweight="bold", pad=12,
+        fig, axes = plt.subplots(
+            nrows=n_rows, ncols=1, sharex=True,
+            figsize=(10, max(0.18 * n_rows, 2)),
         )
-        self.style_ax(ax)
-        if len(idx) <= 15:
-            ax.legend(fontsize=9, frameon=True, framealpha=0.9, edgecolor="#CCCCCC", loc="upper right")
-        fig.tight_layout()
+        fig.patch.set_facecolor("white")
+        axes = np.atleast_1d(axes)
+
+        colors = plt.cm.viridis(np.linspace(0, 1, n_rows))
+        for row, (color, i) in enumerate(zip(colors, idx)):
+            ax = axes[row]
+            ax.set_facecolor("white")
+            ax.plot(t, bold.ts[:, i], color=color, linewidth=0.9)
+            ax.set_ylabel(
+                bold.acronyms[i], fontsize=8, rotation=0, ha="right", va="center",
+            )
+            ax.set_yticks([])
+            for spine in ("top", "right", "left"):
+                ax.spines[spine].set_visible(False)
+            ax.spines["bottom"].set_visible(row == n_rows - 1)
+            ax.tick_params(axis="x", labelbottom=(row == n_rows - 1))
+
+        axes[-1].set_xlabel("Time (s)", fontsize=self.LABEL_SIZE, labelpad=8)
+        fig.suptitle(
+            title or f"{bold.name} — BOLD time series",
+            fontsize=self.TITLE_SIZE, y=1.0,
+        )
+        fig.subplots_adjust(hspace=0, left=0.18, right=0.98, top=0.96, bottom=0.06)
 
         if save:
             if out_path is None:
@@ -427,7 +483,7 @@ class PlotBold:
             fig.savefig(out_path, dpi=300, bbox_inches="tight", facecolor="white")
             plt.close(fig)
             print(f"Saved {out_path}")
-        return fig, ax
+        return fig, axes
 
     def plot_matrix(self, data, title, cmap, cb_label, out_path=None, vmin=None, vmax=None, save=False):
         """Plot a single matrix (FC or FCD); save it if `save=True`."""

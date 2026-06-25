@@ -38,9 +38,9 @@ class MouseConnectivity:
         entries are removed from region_labels and centres. Default: None.
     region_map : voxcell.RegionMap or None
         If provided, each (post-exclusion) region is automatically
-        classified into a macroarea (see MACRO_LIST) and exposed as
-        self.macros, aligned with self.region_labels. Default: None
-        (self.macros stays None).
+        classified into a macroarea (see MACRO_LIST) and an Allen
+        ontology acronym, exposed as self.macros/self.acronyms, aligned
+        with self.region_labels. Default: None (both stay None).
     """
 
     WEIGHT_MODES = ("raw", "log_scale")
@@ -95,12 +95,16 @@ class MouseConnectivity:
         self.tract_lengths = self.tract_lengths[np.ix_(keep, keep)]
 
     def _assign_macroareas(self):
-        """Classify each (post-exclusion) region into a macroarea using region_map."""
+        """Classify each (post-exclusion) region into a macroarea/acronym using region_map."""
         if self.region_map is None:
             self.macros = None
+            self.acronyms = None
             return
         self.macros = np.array(
             [self.get_macro(lb, self.region_map) for lb in self.region_labels]
+        )
+        self.acronyms = np.array(
+            [self.get_acronym(lb, self.region_map) for lb in self.region_labels]
         )
 
     @staticmethod
@@ -119,6 +123,16 @@ class MouseConnectivity:
             pid   = region_map.get(pid, "parent_structure_id")
             pname = region_map.get(pid, "name")
         return "Unknown"
+
+    @staticmethod
+    def get_acronym(label: str, region_map) -> str:
+        """Look up the Allen ontology acronym for a '<Hemisphere> <Region name>' label."""
+        clean = label.replace("Left ", "").replace("Right ", "")
+        ids = region_map.find(clean, "name", with_descendants=False)
+        if not ids:
+            return label
+        rid = int(next(iter(ids)))
+        return region_map.get(rid, "acronym")
 
     # ── preprocessing ─────────────────────────────────────────────────────────
 
