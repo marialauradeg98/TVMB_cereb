@@ -17,38 +17,6 @@ from simulator.mouse_conn import MouseConnectivity
 
 
 class Simulator:
-    """
-    Runs network simulations with a BOLD monitor on a mouse structural
-    connectome, for any model implementing the BaseModel contract
-    (simulator/models.py: Theta/default_theta, NUM_SVAR,
-    COUPLING_VAR_IDX, DEFAULT_INIT_STATE, dfun, noise).
-
-    Combines the setup from GMV/snakeproject2/run_simulation.py (sparse
-    weights + delays) with the integration machinery from
-    GMV/snakeproject2/simulation_utils.py (delayed coupling, Heun
-    integrator, BOLD monitor), adapted to (a) take a single
-    MouseConnectivity SC (shared across mice) instead of per-subject
-    human DK-atlas files, and (b) be agnostic to the model's number of
-    state variables, coupling variable and noise structure, instead of
-    hardcoding GastModel. The delayed network input passed to model.dfun
-    is raw/unscaled — each model applies its own coupling gain
-    internally (see simulator/models.py).
-
-    Any SC preprocessing — weights (log-scaling,
-    percentile thresholding) and tract_lengths (voxel→mm conversion) —
-    is expected to already be applied to `mouse_conn` by the caller
-    (e.g. via MouseConnectivity.set_weights/threshold_weights and
-    mouse_conn.preprocess_tract_lengths) before constructing the
-    Simulator; see scripts/one_sim_gast.py for an example.
-
-    Example
-    -------
-    mc = MouseConnectivity(CONNECTIVITY_FILE, voxel_size_mm=0.025, region_map=region_map)
-    mc.tract_lengths = mc.preprocess_tract_lengths(mc.tract_lengths)
-    sim = Simulator(mc, GastModel)
-    theta = GastModel.default_theta._replace(we=1.0, J=15.0, sigma_V=0.1, sigma_u=0.01)
-    bold = sim.run(theta)
-    """
 
     def __init__(
         self,
@@ -56,17 +24,22 @@ class Simulator:
         model: Type[BaseModel],
         v_c: float = 4.,
         dt: float = 0.1,
-        horizon: int = 650,
+        horizon: Optional[int] = None,
         num_item: int = 1,
-        num_skip: int = 10,
-        num_time: int = 300000,
+        num_skip: int = 10,        # ms — monitor sampling period
+        num_time: int = 300000,    # ms — total simulated time
         init_state: Optional[jp.ndarray] = None,
     ):
+        # num_time (total time) and num_skip (sampling period) are in
+        # MILLISECONDS. They are converted to integration steps via dt inside
+        # _make_run_sim (n_inner = num_skip/dt steps per sample, n_samples =
+        # num_time/num_skip samples), so a run keeps the same duration and
+        # sampling period at any dt — change dt alone. dt_bold = num_skip/1000 s
+        # is then correct (num_skip is already ms).
         self.mouse_conn = mouse_conn
         self.model      = model
         self.v_c        = v_c
         self.dt         = dt
-        self.horizon    = horizon
         self.num_item   = num_item
         self.num_skip   = num_skip
         self.num_time   = num_time
@@ -75,13 +48,34 @@ class Simulator:
         )
 
         self.csr_weights, self.idelays = self._setup_connectivity()
-        if self.idelays.max() >= self.horizon - 2:
-            raise ValueError(
-                f"max idelay {self.idelays.max()} too large for horizon "
-                f"{self.horizon}; increase horizon or v_c"
-            )
+        max_idelay = int(self.idelays.max())
+        # The delay ring buffer reads with a bitwise mask ((t-…) & (horizon-1))
+        # but writes with % horizon; these agree ONLY when horizon is a power
+        # of two, so horizon must be a power of two > max_idelay + 1. Auto-size
+        # it when not given (idelays grow like 1/dt, so a fixed value overflows
+        # at small dt, and a non-power-of-two mis-reads the delayed values).
+        if horizon is None:
+            self.horizon = self._next_pow2(max_idelay + 2)
+        else:
+            if horizon & (horizon - 1) != 0:
+                raise ValueError(
+                    f"horizon must be a power of two (got {horizon}); the "
+                    f"delay buffer is indexed with a bitwise-mask modulo."
+                )
+            if max_idelay >= horizon - 2:
+                raise ValueError(
+                    f"max idelay {max_idelay} too large for horizon "
+                    f"{horizon}; increase horizon or v_c"
+                )
+            self.horizon = horizon
 
-
+    @staticmethod
+    def _next_pow2(n: int) -> int:
+        """Smallest power of two >= n."""
+        p = 1
+        while p < n:
+            p <<= 1
+        return p
 
     def _setup_connectivity(self):
         """
@@ -149,6 +143,11 @@ class Simulator:
             dx2 = dfun(x + dt * dx1 + z, cx[1])
             return x + dt / 2 * (dx1 + dx2) + z
 
+        # num_skip / num_time are in ms; convert to integration steps via dt.
+        n_inner   = int(round(num_skip / dt))        # steps per monitor sample
+        n_samples = int(round(num_time / num_skip))  # number of samples
+
+        # dt_bold in seconds: num_skip is the sampling period in ms (/1000 -> s).
         dt_bold = num_skip / 1000
         bold_buf0, bold_step, bold_samp = vb.make_bold(
             shape=(num_node, num_item),
@@ -158,25 +157,36 @@ class Simulator:
 
         def op(sim, T):
             buffer   = sim['buf']
-            bold_buf = sim['bold']
-            keys     = jax.random.split(sim['rng_key'], num_skip + 1)
+            keys     = jax.random.split(sim['rng_key'], n_inner + 1)
             x        = sim['x']
-            assert x.shape == (num_svar, num_node, num_item)
 
-            for i in range(num_skip):
-                t = i + T * num_skip
+            # inner loop over the n_inner integration steps of one sampling
+            # window, Python-unrolled so XLA can fuse the coupling and ring
+            # buffer updates (a lax.scan here threads the whole buffer through
+            # the carry and is ~12x slower). n_inner = num_skip/dt: fine for
+            # the usual dt (e.g. 100 at dt=0.1); a very small dt makes it large
+            # (2000 at dt=0.005) and compilation slow — that's the trade-off.
+            ta_sum = jp.zeros((num_node, num_item))
+            for i in range(n_inner):
+                t = i + T * n_inner
                 cx = cfun(buffer, t)
                 x = heun(x, cx, keys[i])
                 buffer = buffer.at[:, t % horizon].set(x[coupling_idx])
+                ta_sum = ta_sum + x[coupling_idx]
 
-            bold_buf = bold_step(bold_buf, x[coupling_idx])
+            # temporal average of the coupling variable over the window
+            # (sampling period = num_skip ms), fed to the BOLD monitor.
+            tavg = ta_sum / n_inner
+            bold_buf = bold_step(sim['bold'], tavg)
             _, bold_t = bold_samp(bold_buf)
 
-            sim['x']       = x
-            sim['buf']     = buffer
-            sim['bold']    = bold_buf
-            sim['rng_key'] = keys[-1]
-            return sim, bold_t
+            sim = {
+                'x':       x,
+                'buf':     buffer,
+                'bold':    bold_buf,
+                'rng_key': keys[-1],
+            }
+            return sim, (tavg, bold_t)
 
         def run_sim_jp(rng_key, init_state):
             buffer = jp.zeros((num_node, horizon, num_item)) + init_state[coupling_idx]
@@ -186,25 +196,35 @@ class Simulator:
                 'x':       jp.zeros((num_svar, num_node, num_item)) + init_state.reshape(-1, 1, 1),
                 'rng_key': rng_key,
             }
-            ts = jp.r_[:num_time // num_skip]
+            ts = jp.r_[:n_samples]
 
-            _, bold = jax.lax.scan(op, init, ts)
+            _, (tavg, bold) = jax.lax.scan(op, init, ts)
             cut = 2000
-            return bold[cut::100]  # downsample to 1 timepoint per second
+            # tavg at full sampling resolution (num_skip ms); bold downsampled
+            # to ~1 timepoint per second.
+            return tavg[cut:], bold[cut::100]
 
         return jax.jit(run_sim_jp)
 
     # ── run, adapted from simulation_utils.run_bold_sweep ─────────────
 
-    def run(self, params: BaseModel.Theta, seed: int = 42) -> np.ndarray:
+    def run(self, params: BaseModel.Theta, seed: int = 42,
+            return_tavg: bool = False):
         """
         Run one BOLD simulation for the given model parameters (e.g.
         model.default_theta._replace(...) for a parameter sweep point).
+
+        Returns the BOLD array (downsampled to ~1 timepoint/s). With
+        return_tavg=True, returns (tavg, bold) where tavg is the temporal
+        average of the coupling variable at the sampling period (num_skip ms),
+        transient removed.
         """
         run_sim_jp = self._make_run_sim(params)
         rng_key = jax.random.PRNGKey(seed)
-        bold = run_sim_jp(rng_key, self.init_state)
+        tavg, bold = run_sim_jp(rng_key, self.init_state)
         bold.block_until_ready()
+        if return_tavg:
+            return np.asarray(tavg), np.asarray(bold)
         return np.asarray(bold)
 
     @staticmethod

@@ -60,6 +60,15 @@ class BaseModel:
     def noise(key, num_node, num_item, p):
         return 0.0
 
+    @staticmethod
+    def diffusion(p):
+        """
+        Per-state-variable noise std, shape (NUM_SVAR, 1), for the native
+        vbjax SDDE integrator (make_sdde adds gfun*sqrt(dt)*N(0,1)). Return
+        0. for a deterministic model (the default).
+        """
+        return 0.0
+
 
 class GastModel(BaseModel):
     Theta = collections.namedtuple(
@@ -95,6 +104,11 @@ class GastModel(BaseModel):
         z = z.at[1].multiply(p.sigma_V)
         z = z.at[2].multiply(p.sigma_u)
         return z
+
+    @staticmethod
+    def diffusion(p: Theta):
+        # per-state-variable noise std (order: r, v, u, s)
+        return jp.array([0.0, p.sigma_V, p.sigma_u, 0.0]).reshape(4, 1)
 
     @staticmethod
     def net(y, p):
@@ -159,6 +173,11 @@ class MontbrioModel(BaseModel):
         z = z.at[0].multiply(p.sigma_r)
         z = z.at[1].multiply(p.sigma_V)
         return z
+
+    @staticmethod
+    def diffusion(p: Theta):
+        # per-state-variable noise std (order: r, V)
+        return jp.array([p.sigma_r, p.sigma_V]).reshape(2, 1)
 
     @staticmethod
     def stay_positive(y, _):

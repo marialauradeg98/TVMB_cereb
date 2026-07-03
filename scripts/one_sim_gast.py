@@ -67,7 +67,7 @@ if __name__ == "__main__":
     os.makedirs(FIGS_PATH, exist_ok=True)
     PlotBold().plot_timeseries(
         sim_bold,
-        out_path=os.path.join(FIGS_PATH, "one_sim_bold_ts.png"),
+        out_path=os.path.join(FIGS_PATH, "one_sim_bold_ts_gast.png"),
         title=f"Simulated BOLD time series (we={WE}, J={J}, sigma={SIGMA})",
         save=True,
     )

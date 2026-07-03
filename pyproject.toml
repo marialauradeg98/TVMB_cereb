@@ -17,7 +17,8 @@ dependencies = [
     "scipy",
     "tvb-library",
     "voxcell",
-    "vbi"
+    "vbi",
+    "vbjax"
 ]
 
 [tool.setuptools]
