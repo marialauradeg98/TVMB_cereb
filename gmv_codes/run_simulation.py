@@ -10,10 +10,10 @@ from simulation_utils import run_bold_sweep
 from simulator.mouse_conn import MouseConnectivity
 from voxcell import RegionMap
 
-REGION_MAP_JSON   = "../../../conn_data/1.json"
-CONNECTIVITY_FILE = "../../../conn_data/Conn_Allen/ConnAllen.h5"
-OUTPUT_PATH       = "../../../sim_data"
-FIGS_PATH         =  "../../../figs_bold"
+REGION_MAP_JSON   = "../conn_data/1.json"
+CONNECTIVITY_FILE = "../conn_data/Conn_Allen/ConnAllen.h5"
+OUTPUT_PATH       = "../sim_data"
+FIGS_PATH         =  "../figs_bold"
 VOXEL_MM          = 0.025
 
 region_map = RegionMap.load_json(REGION_MAP_JSON)
