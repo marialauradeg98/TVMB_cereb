@@ -131,7 +131,7 @@ class GastModel(BaseModel):
 class MontbrioModel(BaseModel):
     """
     Montbrio-Pazo-Roxin mean-field model (state: r, V), reusing the
-    dynamics already implemented in vbjax
+    single_node_dynamics already implemented in vbjax
     (vbjax.neural_mass.mpr_dfun/mpr_default_theta/mpr_r_positive).
 
     vbjax's mpr_dfun expects coupling as a 2-tuple (c_r, c_v), for

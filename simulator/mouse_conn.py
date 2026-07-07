@@ -70,6 +70,7 @@ class MouseConnectivity:
         self.exclude_labels = set(exclude_labels) if exclude_labels else set()
         self.region_map = region_map
         self.connectivity = None
+        self.delays = None
         self._load()
         self._apply_exclusions()
         self._assign_macroareas()
@@ -106,6 +107,8 @@ class MouseConnectivity:
         self.acronyms = np.array(
             [self.get_acronym(lb, self.region_map) for lb in self.region_labels]
         )
+    def set_delays(self):
+        self.delays = self.tract_lengths / self.speed
 
     @staticmethod
     def get_macro(label: str, region_map) -> str:
@@ -170,7 +173,8 @@ class MouseConnectivity:
         return w
 
     def preprocess_tract_lengths(self, tl: np.ndarray) -> np.ndarray:
-        """Convert tract lengths from voxel units to mm if voxel_size_mm is set."""
+        """Convert tract lengths from voxel units to mm if voxel_size_mm is set.
+        For confimation about the expected ranges in mm see """
         if self.voxel_size_mm is not None:
             return tl * self.voxel_size_mm
         return tl
@@ -356,6 +360,7 @@ class PlotConn:
         ax.set_facecolor("white")
         self.plot_conn_matrix(ax, data, title, cmap, cb_label, fmt=fmt, vmin=vmin, vmax=vmax)
         fig.tight_layout()
+        plt.show()
         if save:
             if out_path is None:
                 raise ValueError("out_path is required when save=True")
@@ -377,6 +382,7 @@ class PlotConn:
         ax.set_title(title, fontsize=self.TITLE_SIZE, fontweight="bold", pad=12)
         self.style_ax(ax)
         fig.tight_layout()
+        plt.show()
         if save:
             if out_path is None:
                 raise ValueError("out_path is required when save=True")
@@ -438,6 +444,7 @@ class PlotConn:
         ax3d.view_init(elev=90, azim=-90)
 
         fig.tight_layout()
+        plt.show()
         if save:
             if out_path is None:
                 raise ValueError("out_path is required when save=True")
@@ -492,6 +499,7 @@ class PlotConn:
                      fontweight="bold", pad=14, color=self.C_TEXT)
 
         fig.tight_layout()
+        plt.show()
         if save:
             if out_path is None:
                 raise ValueError("out_path is required when save=True")

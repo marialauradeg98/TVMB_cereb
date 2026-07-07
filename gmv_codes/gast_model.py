@@ -1,5 +1,5 @@
 import jax.numpy as jp
-import collections  
+import collections
 
 # Model implementation
 
@@ -8,7 +8,7 @@ Theta = collections.namedtuple(
     field_names='C, k, Delta, v_r, v_theta, g, E, I, tau_u, b, kappa, tau_s, J, Js, we, sigma_V, sigma_u')
 
 default_theta = Theta(
-    C=100.0, k=0.7, Delta=0.5, v_r=-60.0, v_theta=-40.0, g=1.0, E=0.0, I=46.5, 
+    C=100.0, k=0.7, Delta=0.5, v_r=-60.0, v_theta=-40.0, g=1.0, E=0.0, I=46.5,
     tau_u=33.33, b=-2.0, kappa=100.0, tau_s=6.0, Js=1.0, J=15.0, we=0.0, sigma_V=0., sigma_u=0.,
 )
 
@@ -31,7 +31,7 @@ def net(y, p):
     Ce, node_params = p
     r = y[0]
     c_exc = node_params.we * Ce @ r
-  
+
     return dfun(y, (c_exc), node_params)
 
 def stay_positive(y, _):
