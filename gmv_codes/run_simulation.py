@@ -5,29 +5,41 @@ import jax.numpy as jp
 import scipy.sparse
 import gast_model as gm
 
+from paths import Paths
 from simulation_utils import run_bold_sweep
+from simulator.mouse_conn import MouseConnectivity
+from voxcell import RegionMap
+
+REGION_MAP_JSON   = "../../../conn_data/1.json"
+CONNECTIVITY_FILE = "../../../conn_data/Conn_Allen/ConnAllen.h5"
+OUTPUT_PATH       = "../../../sim_data"
+FIGS_PATH         =  "../../../figs_bold"
+VOXEL_MM          = 0.025
+
+region_map = RegionMap.load_json(REGION_MAP_JSON)
+mc = MouseConnectivity(
+    CONNECTIVITY_FILE,
+    voxel_size_mm=VOXEL_MM,
+    region_map=region_map,
+)
+
+mc.tract_lengths = mc.preprocess_tract_lengths(mc.tract_lengths)  # voxel -> mm
+mc.set_weights(MouseConnectivity.log_scale(mc.weights)) # log scale weights
 
 # ------------------------
 # Parse args
 # ------------------------
 
-subject_id   = sys.argv[1]          # sub-XXXX
-we           = float(sys.argv[2])
-sigma   = float(sys.argv[3])
-Ja   = float(sys.argv[4])
-output_file  = sys.argv[5]
+sigma   =  0.001
 v_c = 3.9
 dt = 0.1
-
-
-DERIV_DIR = os.path.join(Paths.DERIVATIVES, subject_id)
 
 # ------------------------
 # Load subject-specific data
 # ------------------------
 
-L = np.loadtxt(os.path.join(DERIV_DIR, "dwi/dk_lengths.txt"))
-C = np.loadtxt(os.path.join(DERIV_DIR, "dwi/dk_weights.txt"))
+L = mc.tract_lengths
+C = mc.weights
 C = C /np.max(C)
 idelays = (L[C != 0.0] / v_c / dt).astype(np.uint32)
 
@@ -56,8 +68,6 @@ setup = {
 # ------------------------
 
 theta = gm.default_theta._replace(
-    we=we,
-    J=Ja,
     sigma_V=setup["noise"],
     sigma_u=0.1 * setup["noise"],
 )
@@ -71,6 +81,8 @@ setup["params"] = theta
 bold = run_bold_sweep((theta, setup))
 
 bold = np.asarray(bold)
+print(bold.shape)
 
-os.makedirs(os.path.dirname(output_file), exist_ok=True)
+output_file = 'prova'
+os.makedirs(output_file, exist_ok=True)
 np.savez(output_file, bold=bold)
