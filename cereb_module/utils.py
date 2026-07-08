@@ -41,9 +41,6 @@ def _spike_train(times, duration):
     return SpikeTrain(times * ms, t_stop=duration * ms)
 
 
-# --------------------------------------------------------------------------- #
-# Metrics
-# --------------------------------------------------------------------------- #
 def population_firing_rate(times, n_neurons, duration, resolution=0.1, kernel_sigma=10.0):
     """Mean per-neuron instantaneous firing rate of a population (Elephant).
 

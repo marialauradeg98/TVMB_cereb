@@ -13,7 +13,6 @@ RANK = COMM.Get_rank()
 
 
 def log(*args, **kwargs):
-    """Print only from the MPI root rank to avoid duplicated output."""
     if RANK == 0:
         print(*args, **kwargs)
 
@@ -79,59 +78,84 @@ def create_populations(scaffold, sim):
     return populations, n_neurons, nodes, first_gid
 
 
-def connect_populations(scaffold, sim, first_gid):
-    """Wire every connectivity set following its connection_model synapses."""
-    resolution = float(sim["resolution"])
-    for cs in scaffold.get_connectivity_sets():
-        tag = cs.tag
-        conn_cfg = sim["connection_models"].get(tag)
-        if conn_cfg is None:
-            log(f"  [skip] no connection_model for '{tag}'")
+def build_syn_specs(conn_cfg):
+    """One NEST syn_spec dict per synapse, mirroring bsb_nest ``get_syn_specs``.
+
+    ``model`` -> ``synapse_model``; ``weight`` is always kept; ``delay`` and
+    ``receptor_type`` only when set; every remaining key (U, u, x, y, tau_rec,
+    tau_fac, tau_psc, ...) is forwarded as a synapse constant.
+    """
+    specs = []
+    for syn in conn_cfg["synapses"]:
+        spec = {"synapse_model": syn.get("model", "static_synapse")}
+        if syn.get("weight") is not None:
+            spec["weight"] = syn["weight"]
+        if syn.get("delay") is not None:
+            spec["delay"] = syn["delay"]
+        if syn.get("receptor_type") is not None:
+            spec["receptor_type"] = int(syn["receptor_type"])
+        for k, v in syn.items():
+            if k not in ("model", "weight", "delay", "receptor_type"):
+                spec[k] = v
+        specs.append(spec)
+    return specs
+
+
+def connect_populations(scaffold, sim, nodes):
+    """Wire the network mirroring bsb_nest ``NestConnection.create_connections``.
+
+    We iterate the ``connection_models`` (as bsb-nest does), pull the matching
+    connectivity set, and connect the full pre/post ``NodeCollection``s. When the
+    model defines a ``rule`` (e.g. the ``gap_junction``), we use the rule branch
+    with ``CollocatedSynapses``; otherwise we collapse duplicate cell pairs and
+    scale the weight by their multiplicity, exactly like the adapter.
+    """
+    for tag, conn_cfg in sim["connection_models"].items():
+        cs = scaffold.get_connectivity_set(tag)
+        pre_name, post_name = cs.pre_type.name, cs.post_type.name
+        pre_nodes, post_nodes = nodes[pre_name], nodes[post_name]
+        syn_specs = build_syn_specs(conn_cfg)
+
+        # rule-based branch (bsb-nest: self.rule is not None) -> connect the whole
+        # populations with the configured rule and any extra conn constants
+        # (e.g. make_symmetric for the Golgi gap junctions).
+        rule = conn_cfg.get("rule")
+        if rule is not None:
+            conn_spec = {"rule": rule}
+            conn_spec.update(
+                {k: v for k, v in conn_cfg.items() if k not in ("synapses", "rule")}
+            )
+            nest.Connect(pre_nodes, post_nodes, conn_spec, nest.CollocatedSynapses(*syn_specs))
+            log(f"  {tag:<28s} rule={rule} ({len(pre_nodes)})")
             continue
 
-        pre_name, post_name = cs.pre_type.name, cs.post_type.name
         pre_locs, post_locs = cs.load_connections().as_globals().all()
         pre_locs, post_locs = np.asarray(pre_locs), np.asarray(post_locs)
         if pre_locs.shape[0] == 0:
             log(f"  [empty] {tag}")
             continue
 
-        # column 0 = cell id; map BSB local id -> contiguous NEST gid
-        source = (pre_locs[:, 0] + first_gid[pre_name]).astype(int).tolist()
-        target = (post_locs[:, 0] + first_gid[post_name]).astype(int).tolist()
-        n = len(source)
+        # collapse duplicate (pre, post) pairs; the single synapse's weight is
+        # scaled by how many times the pair appears (multiplicity).
+        cell_pairs, multiplicity = np.unique(
+            np.column_stack((pre_locs[:, 0], post_locs[:, 0])),
+            return_counts=True, axis=0,
+        )
+        prel, postl = pre_nodes.tolist(), post_nodes.tolist()
+        source = [prel[x] for x in cell_pairs[:, 0]]
+        target = [postl[x] for x in cell_pairs[:, 1]]
 
-        for syn in conn_cfg["synapses"]:
-            model = syn.get("model", "static_synapse")
-
-            if model == "gap_junction":
-                # gap junctions require a symmetric connection and neuron-model
-                # support for secondary events; guard so it can't crash the run.
-                try:
-                    nest.Connect(
-                        source, target,
-                        {"rule": "one_to_one", "make_symmetric": True},
-                        {"synapse_model": "gap_junction", "weight": np.full(n, syn["weight"])},
-                    )
-                    log(f"  {tag:<28s} gap_junction        ({n})")
-                except Exception as exc:  # noqa: BLE001
-                    log(f"  [warn] gap junction '{tag}' skipped: {exc}")
-                continue
-
-            syn_spec = {
-                "synapse_model": model,
-                "weight": np.full(n, syn["weight"]),
-                "delay": np.full(n, syn.get("delay", resolution)),
-            }
-            if syn.get("receptor_type") is not None:
-                syn_spec["receptor_type"] = int(syn["receptor_type"])
-            for k in TSODYKS_KEYS:
-                if k in syn:
-                    syn_spec[k] = syn[k]
-
-            nest.Connect(source, target, {"rule": "one_to_one"}, syn_spec)
-            rec = syn.get("receptor_type", "-")
-            log(f"  {tag:<28s} {model:<15s} rec={rec} ({n})")
+        # CollocatedSynapses can't take per-connection weight/delay lists, so we
+        # loop over the syn_specs (one nest.Connect each), as bsb-nest does.
+        for syn_spec in syn_specs:
+            ssw = {**syn_spec}
+            ssw["weight"] = [syn_spec["weight"] * m for m in multiplicity]
+            if "delay" in syn_spec:
+                ssw["delay"] = [syn_spec["delay"]] * len(ssw["weight"])
+            nest.Connect(source, target, "one_to_one", ssw)
+            rec = syn_spec.get("receptor_type", "-")
+            log(f"  {tag:<28s} {syn_spec['synapse_model']:<15s} rec={rec} "
+                f"({len(source)} pairs / {pre_locs.shape[0]} conns)")
 
 
 def attach_devices(sim, nodes):
@@ -205,7 +229,7 @@ def run_simulation(save=True):
     populations, n_neurons, nodes, first_gid = create_populations(scaffold, sim)
 
     log("Connecting populations...")
-    connect_populations(scaffold, sim, first_gid)
+    connect_populations(scaffold, sim, nodes)
 
     log("Attaching devices...")
     recorders = attach_devices(sim, nodes)
