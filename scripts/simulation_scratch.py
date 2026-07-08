@@ -143,6 +143,34 @@ plt.plot(ta[:, 1])
 plt.xlabel('sample (10 ms)'); plt.ylabel('V'); plt.title('scratch — V time series')
 plt.savefig(os.path.join(FIGS_PATH, "scratch_V_ts.png"), dpi=120)
 
+# --- BOLD response to a firing-rate pulse (boxcar): r = 1 for 1 s, then 0.
+# Feeds the pulse into the Balloon-Windkessel model and records the BOLD output.
+# Uses the same vb.bold_default_theta as the sim's BOLD monitor. ---
+hrf_dt   = 0.01                                 # integration step [s]
+hrf_T    = 15.0                                 # total duration [s]
+pulse_s  = 1.0                                  # pulse duration [s]
+n_hrf    = int(hrf_T / hrf_dt)
+n_on     = int(pulse_s / hrf_dt)
+hrf_buf, hrf_step, hrf_sample = vb.make_bold((1,), hrf_dt, vb.bold_default_theta)
+xs = jp.zeros((n_hrf, 1)).at[:n_on].set(1.0)    # boxcar: firing rate = 1 for 1 s
+
+def _hrf_scan(buf, x):
+    buf = hrf_step(buf, x)
+    buf, y = hrf_sample(buf)
+    return buf, y
+
+_, hrf = jax.lax.scan(_hrf_scan, hrf_buf, xs)
+hrf   = np.asarray(hrf)[:, 0]
+t_hrf = np.arange(n_hrf) * hrf_dt
+
+plt.figure()
+plt.plot(t_hrf, hrf)
+plt.axvspan(0, pulse_s, color='gray', alpha=0.2, label='stimulus (r=1, 1 s)')
+plt.xlabel('time [s]'); plt.ylabel('BOLD response [a.u.]')
+plt.title('scratch — BOLD response to a 1 s firing-rate pulse')
+plt.legend()
+plt.savefig(os.path.join(FIGS_PATH, "scratch_hrf.png"), dpi=120)
+
 
 
 # BOLD (r-driven) at TR = BOLD_TR_MS
