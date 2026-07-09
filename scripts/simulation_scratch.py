@@ -8,6 +8,9 @@ from voxcell import RegionMap
 from simulator.mouse_conn import MouseConnectivity
 from simulator.bold_analysis import BoldTimeSeries, PlotBold
 import matplotlib.pyplot as plt
+import time
+
+t0 = time.time()
 
 # define our model
 def dfun(buf, rv, t: int, p):
@@ -18,7 +21,7 @@ def dfun(buf, rv, t: int, p):
 def chunk_ta_bold(sim, key):
     sim['buf'], rv = cont_chunk(sim['buf'], sim['params'], key)
     sim['ta_buf'], ta = ta_samp(sim['ta_buf'], rv)
-    sim['bold_buf'], bold = bold_samp(sim['bold_buf'], rv[:, 0])   # firing rate r only
+    sim['bold_buf'], bold = bold_samp(sim['bold_buf'], rv[:, 0])   # firing rate r only (not on the temporal average)
     return sim, (ta, bold)
 
 @jax.jit
@@ -30,7 +33,7 @@ BASE              = os.path.dirname(os.path.abspath(__file__))
 REGION_MAP_JSON   = os.path.join(BASE, "../conn_data/1.json")
 CONNECTIVITY_FILE = os.path.join(BASE, "../conn_data/Conn_Allen/ConnAllen.h5")
 OUTPUT_PATH       = os.path.join(BASE, "../sim_data")
-FIGS_PATH         = os.path.join(BASE, "../figs_bold")
+FIGS_PATH         = os.path.join(BASE, "../figs_TA")
 VOXEL_MM          = 0.025
 BOLD_TR_MS        = 1000.0   # BOLD repetition time (1 timepoint / s)
 
@@ -51,14 +54,14 @@ mc.speed = 3.
 mc.set_delays()
 
 # setup delays
-dt = 0.1
+dt = 0.01
 dh = vb.make_delay_helper(weights=mc.weights, lengths=mc.tract_lengths, dt=dt, v_c = mc.speed)
 
 # define parameters for dfun
 params = {
     'dh': dh,
     'theta': vb.mpr_default_theta._replace(eta=-4.6, tau=1., Delta = 0.7, J=14.5, I=0),
-    'k': 0.004
+    'k': 0.005
 }
 
 # initial conditions (r, V), applied to the whole delay history
@@ -78,9 +81,14 @@ buf = jp.zeros((dh.max_lag + chunk_len + 1 , 2, dh.n_from))
 # would be rolled out and the sim would start from (0, 0) instead of the IC.
 buf = buf.at[chunk_len : chunk_len + dh.max_lag + 1].add( INIT_STATE.reshape(1, 2, n_nodes) )
 
-# noise amplitude: different sigma on r and V (shape (2, 1) -> broadcast over nodes)
-sigma_r = 0.004
-sigma_v = sigma_r * 2
+# noise amplitude (shape (2, 1) -> broadcast over nodes).
+# Match the TVB backend: TVB's Additive noise applies gfun = sqrt(2*nsig) and
+# generate() already carries sqrt(dt), so the per-step increment is
+# sqrt(2*nsig)*sqrt(dt)*z. vbjax instead uses gfun directly (noise = gfun*sqrt(dt)*z),
+# so to reproduce the backend (nsig = [nsigma, 2*nsigma]) we set gfun = sqrt(2*nsig).
+nsigma  = 0.
+sigma_r = float(np.sqrt(2 * nsigma))      # ~0.0894  (was 0.004 -> ~22x too small)
+sigma_v = float(np.sqrt(2 * 2 * nsigma))  # ~0.1265  (= sqrt(2)*sigma_r, not 2*sigma_r)
 gfun = jp.array([[sigma_r], [sigma_v]])
 
 # compile model and enable continuations
@@ -101,7 +109,7 @@ sim = {
     'bold_buf': bold_buf
 }
 ta, bold = [], []
-keys = jax.random.split(jax.random.PRNGKey(42), 60)
+keys = jax.random.split(jax.random.PRNGKey(42), 300)
 for i, key in enumerate(tqdm.tqdm(keys)):
     sim, (ta_i, bold_i) = run_one_second(sim, key)
     ta.append(ta_i)
@@ -115,6 +123,9 @@ bold = bold[:: int(round(BOLD_TR_MS / bold_ms))]         # -> TR = 1 s
 
 print(bold.shape)
 
+tf = time.time()
+duration = (tf-t0)/60
+print('Run duration [min]:', duration)
 # save
 os.makedirs(OUTPUT_PATH, exist_ok=True)
 np.savez(os.path.join(OUTPUT_PATH, "1sim_mpr_scratch_bold.npz"),
@@ -142,35 +153,6 @@ plt.figure()
 plt.plot(ta[:, 1])
 plt.xlabel('sample (10 ms)'); plt.ylabel('V'); plt.title('scratch — V time series')
 plt.savefig(os.path.join(FIGS_PATH, "scratch_V_ts.png"), dpi=120)
-
-# --- BOLD response to a firing-rate pulse (boxcar): r = 1 for 1 s, then 0.
-# Feeds the pulse into the Balloon-Windkessel model and records the BOLD output.
-# Uses the same vb.bold_default_theta as the sim's BOLD monitor. ---
-hrf_dt   = 0.01                                 # integration step [s]
-hrf_T    = 15.0                                 # total duration [s]
-pulse_s  = 1.0                                  # pulse duration [s]
-n_hrf    = int(hrf_T / hrf_dt)
-n_on     = int(pulse_s / hrf_dt)
-hrf_buf, hrf_step, hrf_sample = vb.make_bold((1,), hrf_dt, vb.bold_default_theta)
-xs = jp.zeros((n_hrf, 1)).at[:n_on].set(1.0)    # boxcar: firing rate = 1 for 1 s
-
-def _hrf_scan(buf, x):
-    buf = hrf_step(buf, x)
-    buf, y = hrf_sample(buf)
-    return buf, y
-
-_, hrf = jax.lax.scan(_hrf_scan, hrf_buf, xs)
-hrf   = np.asarray(hrf)[:, 0]
-t_hrf = np.arange(n_hrf) * hrf_dt
-
-plt.figure()
-plt.plot(t_hrf, hrf)
-plt.axvspan(0, pulse_s, color='gray', alpha=0.2, label='stimulus (r=1, 1 s)')
-plt.xlabel('time [s]'); plt.ylabel('BOLD response [a.u.]')
-plt.title('scratch — BOLD response to a 1 s firing-rate pulse')
-plt.legend()
-plt.savefig(os.path.join(FIGS_PATH, "scratch_hrf.png"), dpi=120)
-
 
 
 # BOLD (r-driven) at TR = BOLD_TR_MS
