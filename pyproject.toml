@@ -18,7 +18,9 @@ dependencies = [
     "tvb-library",
     "voxcell",
     "vbi",
-    "vbjax"
+    "vbjax",
+    "pandas",
+    "allensdk"
 ]
 
 [tool.setuptools]
