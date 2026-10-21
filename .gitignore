@@ -23,3 +23,9 @@ env/
 
 # Large data, too big for GitHub - fetched via scripts/download_conn_allen.py
 conn_data/Conn_Allen/
+
+# Allen local cache - rebuilt via conn_data/update_allen_cache.py
+conn_data/allen_cache/
+
+# Knox voxel model cache (~GB) - downloaded by conn_data/knox_voxel_conn.py
+conn_data/voxel_model_cache/
