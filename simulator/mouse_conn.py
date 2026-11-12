@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 from collections import Counter
 
@@ -8,8 +10,70 @@ import matplotlib.ticker as ticker
 import matplotlib.patches as mpatches
 from matplotlib.lines import Line2D
 from scipy.ndimage import binary_erosion
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-from tvb.datatypes import connectivity
+from mpl_toolkits.mplot3d import Axes3D
+
+DCN_KW = ("fastigial", "interposed", "dentate nucleus",
+          "vestibulocerebellar")
+CEREB_CORTEX_KW = ("lingula", "central lobule", "culmen", "declive",
+                   "folium", "pyramus", "uvula", "nodulus", "simple lobule",
+                   "ansiform", "crus", "paramedian", "copula",
+                   "paraflocculus", "flocculus")
+
+# Coarse macroarea classification
+MACRO_RULES = [
+    ("Cerebellar cortex", list(CEREB_CORTEX_KW)),
+    ("Deep cereb. nuclei", list(DCN_KW)),
+    ("Inferior olive", ["inferior olivary complex"]),
+    ("Pons", ["pons,"]),
+    ("Lateral reticular n.", ["lateral reticular nucleus"]),
+    ("Trigeminal/Facial/Retic.", ["trigeminal", "facial motor",
+                                  "reticular nucleus"]),
+    ("Thalamus", ["thalamus,"]),
+    ("Midbrain", ["midbrain,"]),
+    ("Hypothalamus", ["hypothalamic", "periventricular"]),
+    ("Striatum/Pallidum", ["striatum", "pallidum", "septal",
+                           "amygdalar nuclei"]),
+    ("Hippocampal formation",
+     ["ammon", "dentate gyrus", "subiculum", "entorhinal",
+      "parasubiculum", "postsubiculum", "presubiculum"]),
+    ("Olfactory", ["olfactory", "piriform", "taenia", "endopiriform",
+                   "lateral olfactory", "peduncular"]),
+    ("Isocortex", []),  # fallback bucket, assigned last
+]
+
+
+def tvb_cereb_preprocessing(mc, zero_internal=True, verbose=True):
+    """Make a freshly-loaded ``MouseConnectivity`` ready for the TVB cerebellar
+    co-simulation. Operates on the RAW weights (before any log transform) and
+    MUTATES ``mc.weights`` in place, returning ``mc``. Call it right after
+    constructing the MouseConnectivity instance and before get_tvb_connectivity().
+
+    Steps:
+
+    0. ALWAYS zero the diagonal (no self-connections), independent of
+       ``zero_internal``.
+
+    1. (if ``zero_internal``) zero the cerebellum-INTERNAL links that are voxel
+       adjacency artefacts and/or already modelled by the NEST/BSB network,
+       while KEEPING the physiologically relevant cortico-nuclear output:
+           - DCN -> cerebellar cortex   (nucleo-cortical)       ZEROED
+           - cerebellar cortex <-> cortex                       ZEROED
+           - DCN <-> DCN                                         ZEROED
+           - cerebellar cortex -> DCN   (Purkinje -> nucleus)   KEPT
+
+    2. TRANSPOSE source<->target. The Knox/Allen builders (conn_data/
+       knox_voxel_conn.py, AllenConnectomeBuilder.py) store weights as
+       ``rows=source, cols=target``. TVB's coupling instead consumes
+       ``weights[target, source]`` (node i's input = sum_j weights[i,j]*state_j,
+       verified in tvb/simulator/coupling.py). Without this transpose the
+       simulated directionality is reversed. After this call ``mc.weights`` has
+       ROWS = TARGET, as TVB expects.
+    """
+    w = MouseConnectivity.preprocess_matrix(
+        mc.weights, mc.region_labels, zero_internal=zero_internal,
+        transpose=True, do_log=False, verbose=verbose)
+    mc.set_weights(w)
+    return mc
 
 
 class MouseConnectivity:
@@ -45,6 +109,13 @@ class MouseConnectivity:
 
     WEIGHT_MODES = ("raw", "log_scale")
 
+    # Canonical keyword lists / macro rules, exposed as class attributes so other
+    # scripts can reuse the single definition (the module globals of the same
+    # name are the source; see top of file).
+    DCN_KW = DCN_KW
+    CEREB_CORTEX_KW = CEREB_CORTEX_KW
+    MACRO_RULES = MACRO_RULES
+
     MACRO_LIST = [
         "Isocortex", "Olfactory areas", "Hippocampal formation",
         "Cortical subplate", "Striatum", "Pallidum", "Thalamus",
@@ -53,13 +124,13 @@ class MouseConnectivity:
     ]
 
     def __init__(
-        self,
-        path: str,
-        speed: float = 4.0,
-        weight_mode: str = "raw",
-        voxel_size_mm: float = None,
-        exclude_labels=None,
-        region_map=None,
+            self,
+            path: str,
+            speed: float = 4.0,
+            weight_mode: str = "raw",
+            voxel_size_mm: float = None,
+            exclude_labels=None,
+            region_map=None,
     ):
         if weight_mode not in self.WEIGHT_MODES:
             raise ValueError(f"weight_mode must be one of {self.WEIGHT_MODES}")
@@ -172,6 +243,133 @@ class MouseConnectivity:
         w         /= w.max()
         return w
 
+    # ── cerebellar region classification (pure-numpy, label-based) ──────────────
+
+    @staticmethod
+    def idx_of_any(labels, keys) -> np.ndarray:
+        """Indices whose (case-insensitive) label contains any of ``keys``."""
+        kl = [k.lower() for k in keys]
+        return np.array([i for i, l in enumerate(labels)
+                         if any(k in str(l).lower() for k in kl)], dtype=int)
+
+    @staticmethod
+    def classify_cerebellum(labels):
+        """(cortex_idx, dcn_idx) for the Knox labels — the single source of truth
+        for the cortex/DCN split used across all scripts (case-insensitive)."""
+        return (MouseConnectivity.idx_of_any(labels, CEREB_CORTEX_KW),
+                MouseConnectivity.idx_of_any(labels, DCN_KW))
+
+    @staticmethod
+    def classify_macro(label: str) -> str:
+        """Coarse macroarea of one label by keyword (MACRO_RULES, no region_map)."""
+        ll = str(label).lower()
+        for name, keys in MACRO_RULES:
+            if keys and any(k in ll for k in keys):
+                return name
+        return "Isocortex"
+
+    @staticmethod
+    def macros_of(labels) -> np.ndarray:
+        return np.array([MouseConnectivity.classify_macro(l) for l in labels])
+
+    # ── matrix preprocessing (pure-numpy, single source of truth) ───────────────
+
+    @staticmethod
+    def zero_diagonal(W: np.ndarray) -> np.ndarray:
+        W = np.asarray(W, dtype=float).copy()
+        np.fill_diagonal(W, 0.0)
+        return W
+
+    @staticmethod
+    def zero_internal_blocks(W: np.ndarray, cortex, dcn) -> np.ndarray:
+        """Zero cerebellum-INTERNAL blocks on a rows=SOURCE matrix, keeping the
+        cortico-nuclear output (cortex->DCN). Returns a copy."""
+        W = np.asarray(W, dtype=float).copy()
+        if len(cortex) and len(dcn):
+            W[np.ix_(dcn, cortex)] = 0.0         # DCN -> cortex      (zeroed)
+            W[np.ix_(cortex, cortex)] = 0.0      # cortex <-> cortex  (zeroed)
+            W[np.ix_(dcn, dcn)] = 0.0            # DCN <-> DCN        (zeroed)
+            # cortex -> DCN (W[cortex, dcn]) intentionally KEPT
+        return W
+
+    @staticmethod
+    def preprocess_matrix(W, labels, zero_internal=True, transpose=True,
+                          do_log=False, verbose=False) -> np.ndarray:
+        """TVB-ready cerebellar matrix from a RAW rows=SOURCE matrix. Single
+        source of truth shared by tvb_cereb_preprocessing(), explore_conn and
+        plot_cerebellar_volumes_3d.
+
+          0. ALWAYS zero the diagonal (no self-connections).
+          1. (zero_internal) zero DCN->cortex, cortex<->cortex, DCN<->DCN
+             (KEEP cortex->DCN).
+          2. (transpose) source->target so rows=TARGET (TVB's coupling consumes
+             weights[target, source]).
+          3. (do_log) log_scale to [0, 1].
+        """
+        cortex, dcn = MouseConnectivity.classify_cerebellum(labels)
+        w = MouseConnectivity.zero_diagonal(W)
+        n_dcn_ctx = 0
+        if zero_internal:
+            n_dcn_ctx = (int(np.count_nonzero(w[np.ix_(dcn, cortex)]))
+                         if len(cortex) and len(dcn) else 0)
+            w = MouseConnectivity.zero_internal_blocks(w, cortex, dcn)
+        if transpose:
+            w = w.T                               # rows = TARGET
+        if do_log:
+            w = MouseConnectivity.log_scale(w)
+        if verbose:
+            print(f"[preprocess_matrix] {len(cortex)} cortex, {len(dcn)} nuclei; "
+                  f"zeroed diagonal" +
+                  (f" + {n_dcn_ctx} DCN->cortex + cortex<->cortex + DCN<->DCN "
+                   f"(kept cortex->DCN)" if zero_internal else "") +
+                  f"; transpose={transpose} "
+                  f"(rows={'TARGET' if transpose else 'SOURCE'}); log={do_log}")
+        return w
+
+    # ── weight normalization for simulation (see the stability discussion) ──────
+
+    @staticmethod
+    def threshold_abs(W: np.ndarray, floor: float) -> np.ndarray:
+        """Zero every weight <= ``floor`` (drops the regression noise floor)."""
+        W = np.asarray(W, dtype=float).copy()
+        W[W <= floor] = 0.0
+        return W
+
+    @staticmethod
+    def spectral_radius(W: np.ndarray) -> float:
+        return float(np.max(np.abs(np.linalg.eigvals(np.asarray(W, dtype=float)))))
+
+    @staticmethod
+    def normalize(W, method="floor_log", floor=1e-4):
+        """Weight normalization for TVB/Montbrio (see the stability analysis).
+
+          - "none"      : unchanged.
+          - "floor_log" : zero the noise floor (<= ``floor``) THEN log_scale to
+                          [0,1]. Fixes the "log makes every weight look the same"
+                          problem (that collapse comes from the 1e-23 regression
+                          floor stretching the log range) and yields a near-
+                          Gaussian, non-negative, bounded weight distribution.
+          - "log"       : plain log_scale (no thresholding).
+          - "spectral"  : W / spectral_radius(W)  -> spectral radius 1
+                          (controls the critical G directly).
+          - "row"       : row-normalize in-strength -> every node's total input 1.
+        """
+        W = np.asarray(W, dtype=float)
+        if method == "none":
+            return W.copy()
+        if method == "floor_log":
+            return MouseConnectivity.log_scale(
+                MouseConnectivity.threshold_abs(W, floor))
+        if method == "log":
+            return MouseConnectivity.log_scale(W)
+        if method == "spectral":
+            r = MouseConnectivity.spectral_radius(W)
+            return W / r if r > 0 else W.copy()
+        if method == "row":
+            s = W.sum(axis=1, keepdims=True)
+            return np.divide(W, s, out=np.zeros_like(W), where=s > 0)
+        raise ValueError(f"unknown normalize method: {method}")
+
     def preprocess_tract_lengths(self, tl: np.ndarray) -> np.ndarray:
         """Convert tract lengths from voxel units to mm if voxel_size_mm is set.
         For confimation about the expected ranges in mm see """
@@ -214,15 +412,16 @@ class MouseConnectivity:
 
     # ── TVB connectivity ──────────────────────────────────────────────────────
 
-    def get_tvb_connectivity(self) -> connectivity.Connectivity:
+    def get_tvb_connectivity(self):
         """
         Build and return a configured TVB Connectivity object applying
         the weight_mode and tract_length preprocessing selected at init.
         The result is cached on self.connectivity so that subsequent
         calls to threshold_weights() can update it in place.
         """
+        from tvb.datatypes import connectivity   # lazy: keeps module TVB-free
         w  = self.log_scale(self.weights) if self.weight_mode == "log_scale" \
-             else self.weights.copy()
+            else self.weights.copy()
         tl = self.preprocess_tract_lengths(self.tract_lengths)
         c  = self.preprocess_centres(self.centres)
 

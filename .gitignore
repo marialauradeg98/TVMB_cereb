@@ -22,4 +22,13 @@ env/
 .DS_Store
 
 # Large data, too big for GitHub - fetched via scripts/download_conn_allen.py
-conn_data/Conn_Allen/
+conn/conn_data/Conn_Allen/
+
+# Knox voxel model cache (~600 MB) - fetched via conn/conn_data/download_voxel_model.py
+conn/conn_data/voxel_model_cache/
+# Generated reports
+conn/conn_*_report/
+conn/volume_report_*/
+conn/conn_data/Knox_conn_*_bak_*/
+conn/conn_data/knox_voxel_conn_*.out
+conn/conn_data/knox_voxel_conn_*.err

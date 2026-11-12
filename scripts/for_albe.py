@@ -19,8 +19,8 @@ G = 0.008
 t0 = time.time()
 
 BASE              = os.path.dirname(os.path.abspath(__file__))
-REGION_MAP_JSON   = os.path.join(BASE, "../conn_data/1.json")
-CONNECTIVITY_FILE = os.path.join(BASE, "../conn_data/Conn_Allen/ConnAllen.h5")
+REGION_MAP_JSON   = os.path.join(BASE, "../conn/conn_data/1.json")
+CONNECTIVITY_FILE = os.path.join(BASE, "../conn/conn_data/Conn_Allen/ConnAllen.h5")
 OUTPUT_PATH       = os.path.join(BASE, "../sim_data")
 FIGS_PATH         = os.path.join(BASE, "../figs_TA")
 VOXEL_MM          = 0.025

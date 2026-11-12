@@ -11,7 +11,7 @@ from simulator.bold_analysis import (
 BASE             = os.path.dirname(os.path.abspath(__file__))
 BOLD_DIR         = os.path.join(BASE, "../emp_data/Data_to_share/BOLD_ts")
 ATLAS_XLSX       = os.path.join(BASE, "../emp_data/macro_atlas_n_172_rois_excel_final.xlsx")
-REGION_MAP_JSON  = os.path.join(BASE, "../conn_data/1.json")
+REGION_MAP_JSON  = os.path.join(BASE, "../conn/conn_data/1.json")
 FIGS_PATH        = os.path.join(BASE, "../figs_bold")
 TS_FIGS_PATH     = os.path.join(FIGS_PATH, "ts")
 FC_FIGS_PATH     = os.path.join(FIGS_PATH, "fc_mat")

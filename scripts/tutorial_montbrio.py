@@ -46,9 +46,9 @@ def save_steady_state(region_labels, r, V, filename):
     return df
 
 
-CONNECTIVITY_FILE = "../conn_data/Conn_Allen/ConnAllen.h5"
-RVM_FILE          = "../conn_data/Conn_Allen/RegionVolumeMapping.h5"
-JSON_FILE         = "../conn_data/1.json"
+CONNECTIVITY_FILE = "../conn/conn_data/Conn_Allen/ConnAllen.h5"
+RVM_FILE          = "../conn/conn_data/Conn_Allen/RegionVolumeMapping.h5"
+JSON_FILE         = "../conn/conn_data/1.json"
 VOXEL_MM          = 0.025
 
 region_map = RegionMap.load_json(JSON_FILE)
